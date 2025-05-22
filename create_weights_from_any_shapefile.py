@@ -19,9 +19,11 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 #%%
 ## Define paths
 reedspath = '~/Desktop/ReEDS-2.0/'
-ifile_shp = reedspath + 'inputs/shapefiles/US_PCA/US_PCA.shp'  # p regions
-# !! test this 
+ifile_shp_p_regions = reedspath + 'inputs/shapefiles/US_PCA/US_PCA.shp'  # p regions
+# county shapefiles
 #ifile_shp = "C:/Users/rrolph/Desktop/ReEDS-2.0/inputs/shapefiles/US_COUNTY_2022/US_COUNTY_2022.shp"
+# gridded shapefile, supply curve from reV
+ifile_shp = "C:/Users/rrolph/OneDrive - NREL/Projects/FY25/ReEDS_development/weights/supply_curve_grid128_prjusalb/supply_curve_grid128_prjusalb.shp"
 
 ifile_weights = reedspath + 'inputs/fuelprices/cendivweights.csv' # this is Donna's file. This is what the output should resemble
 distance_btwn_centroids = 'transmission_distance_cost_500kVdc_ba.csv'
@@ -37,7 +39,8 @@ df_centroid_dist = pd.read_csv('transmission_distance_cost_500kVdc_ba.csv')
 region_name = 'East_South_Central' 
 
 ## Load files 
-gdf = gpd.read_file(ifile_shp) # shapefile
+gdf_p_regions = gpd.read_file(ifile_shp_p_regions) # shapefile
+gdf = gpd.read_file(ifile_shp) # p regions
 df = pd.read_csv(ifile_weights) # weights file from Donna H. (trying to reproduce in this script)
 #df = df[df['r'] <= 'p134'] # p-regions here are numbered higher than 134 and still in the US..
 df = df[df['MEX'] != 1.1] # Remove p regions where MEX = 1.1 
@@ -52,7 +55,7 @@ plt.show()
 # p regions are given in gdf with key 'rb'
 # p regions are given in df with key 'r'
 # Merge the DataFrame with the GeoDataFrame on 'r' and 'rb'
-merged_gdf = gdf.merge(df, left_on='rb', right_on='r', how='left')
+merged_gdf = gdf_p_regions.merge(df, left_on='rb', right_on='r', how='left')
 # Plot the weights
 region_name = 'East_South_Central'
 fig, ax = plt.subplots()
@@ -63,9 +66,8 @@ census_boundaries_gdf.boundary.plot(ax=ax, color='red')
 plt.title(f"{region_name}, Original weight file")
 
 
-
 #%% Define p-regions within the western interconnect
-df_state_p_region_def = gdf.groupby('st')['rb'].apply(list).reset_index()
+df_state_p_region_def = gdf_p_regions.groupby('st')['rb'].apply(list).reset_index()
 df_state_p_region_def.columns = ['st', 'p_regions_list']
 # tx is [p48, p57, p59, p60, p61, p62, p63, p64, p65, p66, p67]
 #df_states_nom_region_df = pd.DataFrame(columns=df.columns)
@@ -99,21 +101,21 @@ p_regions_in_western_interconnect.remove('p47')
 ## Find p regions in Mountain
 mountain_gdf = census_boundaries_gdf.loc[['Mountain']]['geometry']
 # Ensure both GeoDataFrames use the same CRS
-gdf = gdf.to_crs(mountain_gdf.crs)
+gdf_p_regions = gdf_p_regions.to_crs(mountain_gdf.crs)
 # Create a single geometry for the Mountain region
 mountain_geom = mountain_gdf.unary_union
 # Filter rows where geometry is contained within Mountain geometry
-contained_gdf = gdf[gdf.geometry.within(mountain_geom)]
+contained_gdf = gdf_p_regions[gdf_p_regions.geometry.within(mountain_geom)]
 p_regions_in_mountain = contained_gdf['rb'].unique()
 
 ## Find p regions in 'West_North_Central'
 west_north_central_gdf = census_boundaries_gdf.loc[['West_North_Central']]['geometry']
 # Ensure both GeoDataFrames use the same CRS
-gdf = gdf.to_crs(west_north_central_gdf.crs)
-# Create a single geometry for the Mountain region
+gdf_p_regions = gdf_p_regions.to_crs(west_north_central_gdf.crs)
+# Create a single geometry for the region
 wn_central_geom = west_north_central_gdf.unary_union
-# Filter rows where geometry is contained within Mountain geometry
-contained_gdf = gdf[gdf.geometry.within(wn_central_geom)]
+# Filter rows where geometry is contained within wn geometry
+contained_gdf = gdf_p_regions[gdf_p_regions.geometry.within(wn_central_geom)]
 p_regions_in_west_north_central = contained_gdf['rb'].unique()
 
 
@@ -129,8 +131,8 @@ ax = gdf.plot(figsize=(10, 10), color='lightblue', edgecolor='black')
 # Plot the centroids as red points
 ax.scatter(centroid_x, centroid_y, color='red', marker='o', label='Centroid')
 # Add labels for each centroid
-for i, row in gdf.iterrows():
-    ax.text(row['centroid'].x, row['centroid'].y, str(row['OBJECTID_1']), color='black', fontsize=8)
+#for i, row in gdf.iterrows():
+#    ax.text(row['centroid'].x, row['centroid'].y, str(row['OBJECTID_1']), color='black', fontsize=8)
 # Add a title and legend
 plt.title('Centroids of Geometries')
 plt.legend()
@@ -193,11 +195,12 @@ for idx, row in gdf.iterrows():
     nearest_point = nearest_points(centroid, census_without_country)[1]
     # If centroid is in the 'Mountain' or 'West_North_Central' census region, then you need to use the CA/OR boundary and the Wisconsin/Ohio boundary respectively so it doesn't use the distance to the western interconnect (this is how Donna did it and we are trying to match her weights file)
     
-    if row['rb'] in p_regions_in_mountain:
+    #if row['rb'] in p_regions_in_mountain:
+    if mountain_gdf.geometry.apply(lambda polygon: polygon.contains(centroid)).any():
         # Replace census_without_country to be the CA/OR boundary
         census_boundary_to_use = census_without_country.iloc[5] 
         nearest_point = nearest_points(centroid, census_boundary_to_use)[1]
-    if row['rb'] in p_regions_in_west_north_central:  
+    if west_north_central_gdf.apply(lambda polygon: polygon.contains(centroid)).any():  
         # Replace census_without_country to be the Wisconsin/Ohio boundary
         census_boundary_to_use = census_without_country.iloc[0] 
         nearest_point = nearest_points(centroid, census_boundary_to_use)[1]
@@ -286,10 +289,10 @@ plt.show()
 
 
 #%% Plot the distance from the census boundaries
-fig, ax = plt.subplots()
-gdf.set_geometry('geom_of_p_regions').plot(column='dist_to_boundary', ax=ax, legend=True, cmap='viridis', edgecolor='orange')
+fig, ax = plt.subplots(figsize=(12,8))
+gdf.set_geometry('geom_of_p_regions').plot(column='dist_to_boundary', ax=ax, legend=True, cmap='viridis', edgecolor='orange', linewidth=0.1)
 # Add census boundaries
-census_without_country.plot(ax=ax, color='red')
+census_without_country.plot(ax=ax, color='red', linewidth=1) 
 plt.title('Distance from census boundary \nto center of p-regions')
 
 
@@ -299,10 +302,11 @@ regions = [
     "East_North_Central", "East_South_Central", "Mid_Atlantic",
     "Mountain", "New_England", "Pacific", "South_Atlantic",
     "West_North_Central", "West_South_Central"]
-# Create the 'r' column with values p1 to p156
-r_values = [f"p{i}" for i in range(1, 157)]
+# Use the 'rb' column from gdf as the 'r' column in weights_df
+r_values = gdf['rb'].values
 # Create a DataFrame with zeros
-weights_df = pd.DataFrame(0, index=range(156), columns=regions)
+weights_df = pd.DataFrame(0, index=gdf['rb'], columns=regions)
+# Insert the 'r' column using the 'rb' column from gdf
 weights_df.insert(0, 'r', r_values)
 
 
@@ -375,7 +379,7 @@ for rb_value in merged_gdf_generated_weights['rb'].unique():
 
         # Check if the point is not within the region
         if not region_geometry.contains(point).values[0]:
-            # Calculate the shortest distance from the point to the region boundary
+            # Calculate the shortest distance from the point to the region boundary  
             distance = point.distance(region_geometry)*0.62/1000  # converting meters to miles
             
             # make distance 0 if greater than threshold becuase that weight will be 0 since the census region is deemed too far away
@@ -410,7 +414,11 @@ for rb_value in merged_gdf_generated_weights['rb'].unique():
             # (1 - e9)* (sum_of_all_columns_with_regions_name - e9 - loop_index)/(sum_of_all_columns_with_regions_name - e9)
             sum_of_all_distances = distance_frame.loc[distance_frame['rb'] == rb_value, regions].sum().sum()  # this is correct
 
-            new_weight = (1 - e9)* (sum_of_all_distances - e9 - distance_frame.loc[distance_frame['rb']== rb_value, census_region].values[0])/(sum_of_all_distances - e9)
+            try:
+                new_weight = (1 - e9)* (sum_of_all_distances - e9 - distance_frame.loc[distance_frame['rb']== rb_value, census_region].values[0])/(sum_of_all_distances - e9)
+
+            except RuntimeWarning:
+                print(f"RuntimeWarning occurred for rb_value: {rb_value}")
 
             if not region_geometry.contains(point).values[0]:
                 if new_weight != 0:
@@ -428,7 +436,7 @@ weights_generated = merged_gdf_generated_weights.iloc[:, start_col:]
 # Mid_Atlantic and South_Atlantic are both around 0.806... its just doing 1 - e9.
 
 #%% Plot your generated weights file (should be the same as the normalized distance df)
-region_name = 'South_Atlantic'
+region_name = 'Mountain'
 fig,ax = plt.subplots()
 # Add geometry to weights df
 # Add census boundaries
@@ -454,6 +462,7 @@ cbar.set_ticks([0, 0.25, 0.5, 0.75, 1])  # Set custom ticks
 plt.title(f"{region_name}, Original weight file")
 
 # Calculate difference between Donna's and generated weights
+
 fig,ax = plt.subplots()
 df_donna_minus_generated_weights = weights_with_geom.copy()
 df_donna_minus_generated_weights.iloc[:,1:-1] = df.iloc[:133,1:-1] - weights_with_geom.iloc[:,1:-1]
