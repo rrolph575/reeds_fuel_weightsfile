@@ -21,9 +21,9 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 reedspath = '~/Desktop/ReEDS-2.0/'
 ifile_shp_p_regions = reedspath + 'inputs/shapefiles/US_PCA/US_PCA.shp'  # p regions
 # county shapefiles
-#ifile_shp = "C:/Users/rrolph/Desktop/ReEDS-2.0/inputs/shapefiles/US_COUNTY_2022/US_COUNTY_2022.shp"
+ifile_shp = "C:/Users/rrolph/Desktop/ReEDS-2.0/inputs/shapefiles/US_COUNTY_2022/US_COUNTY_2022.shp"
 # gridded shapefile, supply curve from reV
-ifile_shp = "C:/Users/rrolph/OneDrive - NREL/Projects/FY25/ReEDS_development/weights/supply_curve_grid128_prjusalb/supply_curve_grid128_prjusalb.shp"
+#ifile_shp = "C:/Users/rrolph/OneDrive - NREL/Projects/FY25/ReEDS_development/weights/supply_curve_grid128_prjusalb/supply_curve_grid128_prjusalb.shp"
 
 ifile_weights = reedspath + 'inputs/fuelprices/cendivweights.csv' # this is Donna's file. This is what the output should resemble
 distance_btwn_centroids = 'transmission_distance_cost_500kVdc_ba.csv'
