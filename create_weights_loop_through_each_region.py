@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import sys
 sys.path.append("C:/Users/rrolph/Desktop/ReEDS-2.0")
 import reeds 
-from shapely.geometry import LineString
+from shapely.geometry import LineString, MultiLineString
 from shapely.ops import nearest_points, unary_union, polygonize
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
@@ -67,34 +67,6 @@ census_boundaries_gdf.boundary.plot(ax=ax, color='red')
 plt.title(f"{region_name}, Original weight file")
 
 
-#%% Define p-regions within the western interconnect
-df_state_p_region_def = gdf_p_regions.groupby('st')['rb'].apply(list).reset_index()
-df_state_p_region_def.columns = ['st', 'p_regions_list']
-# tx is [p48, p57, p59, p60, p61, p62, p63, p64, p65, p66, p67]
-#df_states_nom_region_df = pd.DataFrame(columns=df.columns)
-#df_states_nom_region_df = df_states_nom_region_df.drop(columns=['MEX', 'r'])
-regions = {
-    'East_North_Central': ['wi', 'il', 'in', 'mi', 'oh'],  ## put in states that are in same syntax as df_state_p_region_def
-    'East_South_Central': ['ms', 'al', 'tn', 'ky'],
-    'Mid_Atlantic': ['ny','pa','nj'],
-    'Mountain': ['mt','wy','id','co','ut','nv','az','nm'],
-    'New_England': ['me', 'nh','vt', 'ma', 'ri', 'ct'],
-    'Pacific': ['wa', 'or', 'ca'],
-    'South_Atlantic': ['wv', 'de', 'md', 'va', 'nc', 'sc', 'ga', 'fl'],
-    'West_North_Central': ['nd', 'sd', 'ne', 'ks', 'mn', 'ia', 'mo'],
-    'West_South_Central': ['ok', 'tx', 'ar', 'la']
-}
-
-mountain_states = regions['Mountain']
-pacific_states = regions['Pacific']
-# Combine the two lists of states
-states_to_filter = mountain_states + pacific_states
-# Filter the DataFrame for these states
-filtered_df = df_state_p_region_def[df_state_p_region_def['st'].isin(states_to_filter)]
-p_regions_in_western_interconnect = filtered_df['p_regions_list'].explode().tolist()
-p_regions_in_western_interconnect.extend(['p32', 'p59'])
-p_regions_in_western_interconnect.remove('p35')
-p_regions_in_western_interconnect.remove('p47')
 
 
 
@@ -220,6 +192,77 @@ gdf_each_census_border_separated.plot(column = 'region_name')
 
 # country_border = country_boundaries_gdf.geometry.iloc[0]
 
+# Find the fartheset centroid in each region to the correct boundary (taking into account western interconnect) 
+for region in census_boundaries_gdf.index.to_list():
+        census_boundary_to_use = gdf_each_census_border_separated[
+            gdf_each_census_border_separated['region_name'] == region
+        ].geometry.values[0]
+
+        # Find the farthest centroid from each census_boundary_to_use, that is still within that census boundary
+
+
+#%% Calculate the max from each centroid to the nearest census boundary
+distances = []
+lines = []
+# Loop through each row
+for idx, row in gdf.iterrows():
+    centroid = row['centroid']
+    nearest_point = nearest_points(centroid, census_without_country)[1]
+    # If centroid is in the 'Mountain' or 'West_North_Central' census region, then you need to use the CA/OR boundary and the Wisconsin/Ohio boundary respectively so it doesn't use the distance to the western interconnect (this is how Donna did it and we are trying to match her weights file)
+    
+    #if row['rb'] in p_regions_in_mountain:
+    if mountain_gdf.geometry.apply(lambda polygon: polygon.contains(centroid)).any():
+        # Replace census_without_country to be the CA/OR boundary
+        census_boundary_to_use = census_without_country.iloc[5] 
+        nearest_point = nearest_points(centroid, census_boundary_to_use)[1]
+    if west_north_central_gdf.apply(lambda polygon: polygon.contains(centroid)).any():  
+        # Replace census_without_country to be the Wisconsin/Ohio boundary
+        census_boundary_to_use = census_without_country.iloc[0] 
+        nearest_point = nearest_points(centroid, census_boundary_to_use)[1]
+
+
+    distance = centroid.distance(nearest_point)
+    
+    if distance.shape[0] == 1:
+        nearest_single_point = nearest_point.iloc[0]
+        line = LineString([centroid, nearest_single_point])
+        distances.append(distance.values[0])
+    
+    else:
+        idx_min = distance.idxmin()
+        nearest_single_point = nearest_point.iloc[idx_min].geometry
+        line = LineString([centroid, nearest_single_point.iloc[0]])
+        distances.append(distance.iloc[idx_min].values[0][0])
+    
+    lines.append(line)
+
+# Add results to gdf
+gdf['dist_to_boundary'] = distances
+gdf['dist_line'] = lines
+# Convert to GeoDataFrame for plotting
+lines_gdf = gpd.GeoDataFrame(geometry=lines, crs=gdf.crs) 
+gdf = gdf.to_crs(census_boundaries_gdf.crs)
+# Rename gdf['geometry'] to gdf['geom_of_p_regions']
+gdf['geom_of_p_regions'] = gdf['geometry']
+# Spatial join (using 'centroid' of gdf for point-in-polygon test)
+gdf['geometry'] = gdf['centroid']  # Temporarily use centroid as geometry
+#gdf['geometry'] = gdf['geom_of_p_regions']   # !! 
+
+# this joins the centroids to the appropriate census boundary
+joined = gpd.sjoin(gdf, census_boundaries_gdf, how='inner', predicate='within')
+# using geom_of_p_regions above, p123 is contained in 'joined'
+# Group by 'cendiv' (index of census_boundaries_gdf) and list 'rb'
+p_regions_by_cendiv = joined.groupby('index_right')['rb'].apply(list) # p123 is in South_Atlantic
+# Create a mapping for 'p' values to their respective regions
+p_to_region = {}
+for region, p_values in p_regions_by_cendiv.items():
+    for p in p_values:
+        p_to_region[p] = region
+# Add a new column to gdf that maps 'rb' to the region name
+gdf['region'] = gdf['rb'].map(p_to_region)  # p123 is now in South_Atlantic for 'region'
+# Group by 'region' and find the row with the maximum 'dist_to_boundary' for each region
+max_dist_rows = gdf.loc[gdf.groupby('region')['dist_to_boundary'].idxmax()]
+
 
 
 
@@ -228,6 +271,7 @@ distances_df = pd.DataFrame(index=gdf.index, columns=list(census_boundaries_gdf.
 lines_df = pd.DataFrame(index=gdf.index, columns=list(census_boundaries_gdf.index) + ['rb'])
 
 for region in census_boundaries_gdf.index.to_list():
+    farthest_point = max_dist_rows[max_dist_rows['region'] == region]['centroid'].values[0]
     for idx, row in gdf.iterrows():
         centroid = row['centroid']
         rb_value = row['rb']
@@ -235,28 +279,40 @@ for region in census_boundaries_gdf.index.to_list():
 
         # Determine the census boundary to use for the current region
         census_boundary_to_use = gdf_each_census_border_separated[
-            gdf_each_census_border_separated['region_name'] == region
+        gdf_each_census_border_separated['region_name'] == region
         ].geometry.values[0]
 
         # Find the nearest point and calculate the distance
-        nearest_point = nearest_points(centroid, census_boundary_to_use)[1]
-        distance = centroid.distance(nearest_point)
+        #nearest_point = nearest_points(centroid, census_boundary_to_use)[1]
+        #distance = centroid.distance(nearest_point)
+        distance = centroid.distance(farthest_point)
 
         # Handle single or multiple distances
         if isinstance(distance, float):  # Single distance case
-            line = LineString([centroid, nearest_point])
+            line = LineString([centroid, farthest_point])
             distances_df.loc[idx, region] = distance
             distances_df.loc[idx, 'rb'] = rb_value
             lines_df.loc[idx, region] = line
             lines_df.loc[idx, 'rb'] = rb_value
+
+
         else:  # Multiple distances case
             idx_min = distance.idxmin()
-            nearest_single_point = nearest_point.iloc[idx_min].geometry
-            line = LineString([centroid, nearest_single_point])
+            farthest_single_point = farthest_point.iloc[idx_min].geometry
+            line = LineString([centroid, farthest_single_point])
             distances_df.loc[idx, region] = distance.iloc[idx_min]
             distances_df.loc[idx, 'rb'] = rb_value
             lines_df.loc[idx, region] = line
             lines_df.loc[idx, 'rb'] = rb_value
+
+
+
+
+# max_dist_rows = gdf.loc[gdf.groupby('region')['dist_to_boundary'].idxmax()]
+
+# dist_lines_gdf = gpd.GeoDataFrame(max_dist_rows.copy(), geometry='dist_line')
+
+#  print(gdf.groupby('region')['dist_to_boundary'].max()*0.62/1000)
 
 
 
@@ -370,13 +426,14 @@ for idx, row in merged_gdf.iterrows():
         # Set distances to 0 for all regions except Mountain and Pacific
         for region in census_boundaries_gdf.index.to_list():
             if region not in ['Mountain', 'Pacific']:
-                merged_gdf.at[idx, region] = 0
+                merged_gdf.at[idx, region] = 0 #np.nan # 0
     #if centroid.x > gdf_western_interconnect.geometry.bounds.minx.values[0]:
     else:
         # Set distances to 0 for Mountain and Pacific
-        merged_gdf.at[idx, 'Mountain'] = 0
-        merged_gdf.at[idx, 'Pacific'] = 0
+        merged_gdf.at[idx, 'Mountain'] = 0 #np.nan #0
+        merged_gdf.at[idx, 'Pacific'] = 0 #np.nan #0
 
+merged_gdf.geometry = merged_gdf['geom_of_p_regions']  # Reset geometry to original p-region geometries
 
 region_name = 'Mountain'
 
@@ -390,7 +447,7 @@ sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=merged_gdf[re
 sm._A = []  # Dummy array for ScalarMappable
 # Add the colorbar to the plot
 cbar = fig.colorbar(sm, ax=ax)
-cbar.set_label(f'{region_name} Values')
+cbar.set_label(f'{region_name} Distance')
 
 
 
@@ -406,7 +463,7 @@ sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=merged_gdf[re
 sm._A = []  # Dummy array for ScalarMappable
 # Add the colorbar to the plot
 cbar = fig.colorbar(sm, ax=ax)
-cbar.set_label(f'{region_name} Values')
+cbar.set_label(f'{region_name} Distance')
 
 
 
@@ -433,3 +490,120 @@ for col in distances_df.columns:
 # Create a new DataFrame where values less than 200 miles are set to 1
 weights_new = distances_df_miles.copy()
 
+## Set values more than threshold_miles to 0 because they are considered too far from the region 
+
+distance_threshold_miles = 800
+
+# Apply the condition to all numeric columns (excluding 'rb')
+for col in weights_new.columns:
+    if col != 'rb':  # Skip the 'rb' column
+        weights_new[col] = weights_new[col].apply(lambda x: 0 if x > distance_threshold_miles else x)
+
+
+
+
+
+####### weights_new is what you need to normalize
+
+
+
+
+
+
+
+
+### !!!! Problems with the normalization
+
+## Normalize
+
+
+# Identify numeric and non-numeric columns
+numeric_cols = weights_new.select_dtypes(include=[np.number]).columns
+non_numeric_cols = weights_new.columns.difference(numeric_cols)
+
+# Function to normalize nonzero values in a row
+def normalize_row(row):
+    numeric = row[numeric_cols]
+    nonzero = numeric[numeric != 0]
+    total = nonzero.sum()
+    
+    result = pd.Series(0.0, index=numeric_cols)
+    
+    if total != 0:
+        normalized = nonzero / total
+        result.update(normalized)
+    
+    return result
+
+# Apply the normalization
+normalized_numeric = weights_new.apply(normalize_row, axis=1)
+
+# Combine with non-numeric columns
+weights_normalized = pd.concat([normalized_numeric, weights_new[non_numeric_cols].reset_index(drop=True)], axis=1)
+
+# Optional: round for display
+weights_normalized[numeric_cols] = weights_normalized[numeric_cols].round(4)
+
+print(weights_normalized)
+
+# Merge with coords and plot
+merged_gdf_norm = gdf.merge(weights_normalized, left_on='rb', right_on='rb', how='left')
+region_name = 'East_South_Central'
+
+merged_gdf_norm.geometry = merged_gdf_norm['geom_of_p_regions']  # Reset geometry to original p-region geometries
+
+
+fig, ax = plt.subplots()
+# Plot the data with the specified colormap
+plot = merged_gdf_norm.plot(column=region_name, ax=ax, legend=False, cmap='viridis')
+# Overlay the census boundaries
+census_boundaries_gdf.plot(ax=ax, color='none', edgecolor='black', linewidth=1)
+# Create a ScalarMappable using the same colormap and normalization as the plot
+sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=merged_gdf_norm[region_name].min(), vmax=merged_gdf_norm[region_name].max()))
+sm._A = []  # Dummy array for ScalarMappable
+# Add the colorbar to the plot
+cbar = fig.colorbar(sm, ax=ax)
+cbar.set_label(f'{region_name} Weights')
+
+
+
+
+# Assuming weights_normalized is your existing DataFrame
+# First, create a copy so we don't overwrite the original
+weights_inverted_df = weights_normalized.copy()
+
+# Apply the transformation only on numeric columns (exclude the 'rb' column)
+numeric_cols = weights_inverted_df.columns.difference(['rb'])
+
+# For each numeric cell, apply the rule:
+# if the value is 0, keep it 0, else replace with 1 - value
+weights_inverted_df[numeric_cols] = weights_inverted_df[numeric_cols].applymap(
+    lambda x: 0 if x == 0 else 1 - x
+)
+
+# Now weights_inverted_df should have the desired transformation
+print(weights_inverted_df)
+
+
+
+
+
+
+# Merge with coords and plot
+merged_gdf_norm = gdf.merge(weights_inverted_df, left_on='rb', right_on='rb', how='left')
+region_name = 'Mountain'
+
+merged_gdf_norm.geometry = merged_gdf_norm['geom_of_p_regions']  # Reset geometry to original p-region geometries
+
+
+fig, ax = plt.subplots()
+# Plot the data with the specified colormap
+plot = merged_gdf_norm.plot(column=region_name, ax=ax, legend=False, cmap='viridis')
+# Overlay the census boundaries
+census_boundaries_gdf.plot(ax=ax, color='none', edgecolor='black', linewidth=1)
+# Create a ScalarMappable using the same colormap and normalization as the plot
+sm = plt.cm.ScalarMappable(cmap='viridis', norm=plt.Normalize(vmin=merged_gdf_norm[region_name].min(), vmax=merged_gdf_norm[region_name].max()))
+sm._A = []  # Dummy array for ScalarMappable
+# Add the colorbar to the plot
+cbar = fig.colorbar(sm, ax=ax)
+cbar.set_label(f'{region_name} Weights')
